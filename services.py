@@ -14,6 +14,8 @@ import pandas as pd
 import opensmile
 import numpy as np
 from datetime import datetime, timedelta
+import aiohttp
+import asyncio
 from models import (
     FeatureSetEnum, 
     FeatureExtractionResult, 
@@ -543,4 +545,78 @@ class EmotionAnalysisService:
                 processing_time=processing_time,
                 error=str(e)
             )
+
+
+class VaultAPIService:
+    """EC2 Vault APIからWAVファイルを取得するサービス"""
+    
+    def __init__(self, base_url: str = "https://api.hey-watch.me"):
+        self.base_url = base_url
+    
+    async def fetch_wav_file(self, user_id: str, date: str, time_slot: str, temp_dir: str) -> Optional[str]:
+        """
+        Vault APIからWAVファイルを取得して一時ファイルに保存
+        
+        Args:
+            user_id: ユーザーID (例: user123)
+            date: 日付 (例: 2025-06-25)
+            time_slot: 時間スロット (例: 20-30)
+            temp_dir: 一時ディレクトリのパス
+            
+        Returns:
+            Optional[str]: 保存されたファイルのパス（失敗時はNone）
+        """
+        try:
+            # Whisper APIと同じエンドポイント形式を使用
+            url = f"{self.base_url}/download?user_id={user_id}&date={date}&slot={time_slot}"
+            
+            # SSL検証をスキップするコネクターを作成
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        # 一時ファイルに保存
+                        temp_file_path = os.path.join(temp_dir, f"{time_slot}.wav")
+                        with open(temp_file_path, 'wb') as f:
+                            f.write(await response.read())
+                        
+                        print(f"✅ WAVファイル取得成功: {time_slot}.wav")
+                        return temp_file_path
+                    else:
+                        print(f"❌ WAVファイル取得失敗: {time_slot}.wav (ステータス: {response.status})")
+                        return None
+                        
+        except Exception as e:
+            print(f"❌ WAVファイル取得エラー: {time_slot}.wav - {str(e)}")
+            return None
+    
+    async def get_available_wav_files(self, user_id: str, date: str) -> List[str]:
+        """
+        指定ユーザー・日付で利用可能なWAVファイルのスロット一覧を取得
+        
+        Args:
+            user_id: ユーザーID
+            date: 日付
+            
+        Returns:
+            List[str]: 利用可能な時間スロットのリスト
+        """
+        available_slots = []
+        
+        # 48個の時間ブロックを確認（Whisper APIと同じロジック）
+        time_blocks = [f"{hour:02d}-{minute:02d}" for hour in range(24) for minute in [0, 30]]
+        
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            for time_slot in time_blocks:
+                try:
+                    url = f"{self.base_url}/download?user_id={user_id}&date={date}&slot={time_slot}"
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            available_slots.append(time_slot)
+                except Exception:
+                    # エラーは無視して継続
+                    pass
+        
+        return available_slots
 

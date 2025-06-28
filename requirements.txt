@@ -9,4 +9,3 @@ httpx==0.25.2
 pytest==7.4.3
 pytest-asyncio==0.21.1
 aiohttp==3.9.1
-aiofiles==23.2.0

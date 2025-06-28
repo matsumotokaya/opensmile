@@ -5,6 +5,7 @@ OpenSMILEを使用した音声特徴量抽出と感情分析
 
 import time
 import os
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -28,9 +29,10 @@ from models import (
     TestDataResponse,
     TimelineAnalysisRequest,
     TimelineAnalysisResponse,
-    FeaturesTimelineResponse
+    FeaturesTimelineResponse,
+    VaultFetchRequest
 )
-from services import OpenSMILEService, EmotionAnalysisService
+from services import OpenSMILEService, EmotionAnalysisService, VaultAPIService
 
 # FastAPIアプリケーションの初期化
 app = FastAPI(
@@ -44,6 +46,7 @@ app = FastAPI(
 # サービスの初期化
 opensmile_service = OpenSMILEService()
 emotion_service = EmotionAnalysisService()
+vault_service = VaultAPIService()
 
 
 @app.get("/", response_model=dict)
@@ -412,79 +415,139 @@ async def list_result_files():
         )
 
 
-@app.post("/process/test-data", response_model=FeaturesTimelineResponse)
-async def process_test_data(request: TimelineAnalysisRequest = None):
-    """test-dataフォルダ内のWAVファイルを処理して1秒ごとの特徴量タイムラインJSONで保存"""
+@app.post("/process/vault-data", response_model=FeaturesTimelineResponse)
+async def process_vault_data(request: VaultFetchRequest):
+    """Vault APIからWAVファイルを取得して1秒ごとの特徴量タイムラインを生成"""
     start_time = time.time()
     
-    # リクエストがない場合はデフォルト値を使用
-    if request is None:
-        request = TimelineAnalysisRequest()
-    
     try:
-        # test-dataディレクトリを指定
-        test_data_dir = Path("test-data")
+        print(f"\n=== Vault API連携による特徴量タイムライン抽出開始 ===")
+        print(f"ユーザーID: {request.user_id}")
+        print(f"対象日付: {request.date}")
+        print(f"特徴量セット: {request.feature_set.value}")
+        print(f"=" * 50)
         
-        if not test_data_dir.exists():
+        # 利用可能なWAVファイルを取得
+        available_slots = await vault_service.get_available_wav_files(request.user_id, request.date)
+        
+        if not available_slots:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="test-dataディレクトリが見つかりません"
+                detail=f"ユーザー {request.user_id} の {request.date} にWAVファイルが見つかりません。アクセスしたパス: {vault_service.base_url}/download?user_id={request.user_id}&date={request.date}&slot=XX-XX"
             )
         
-        # test-dataディレクトリの.wavファイルを検索
-        wav_files = list(test_data_dir.glob("*.wav"))
+        print(f"📄 利用可能なWAVファイル: {len(available_slots)}個")
+        print(f"   - スロット: {', '.join(available_slots)}")
+        print(f"=" * 50)
         
-        if not wav_files:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="test-dataディレクトリに.wavファイルが見つかりません"
-            )
-        
-        saved_files = []
         features_results = []
+        fetched_files = []
+        error_files = []
+        saved_files = []
         
-        # 特徴量タイムライン抽出を実行
-        for wav_file in wav_files:
-            try:
-                features_result = emotion_service.extract_features_timeline(
-                    str(wav_file),
-                    request.feature_set
-                )
-                features_results.append(features_result)
-                
-            except Exception as e:
-                # エラーが発生した場合のハンドリング
-                from models import FeaturesTimelineResult
-                error_result = FeaturesTimelineResult(
-                    date="unknown",
-                    slot="unknown", 
-                    filename=wav_file.name,
-                    duration_seconds=0,
-                    features_timeline=[],
-                    error=str(e)
-                )
-                features_results.append(error_result)
+        # test-dataディレクトリを作成
+        output_dir = Path("test-data")
+        output_dir.mkdir(exist_ok=True)
         
-        # 特徴量タイムライン結果をJSONファイルに保存
-        features_filename = f"features_timeline_{int(time.time())}.json"
-        features_output_path = test_data_dir / features_filename
+        # 一時ディレクトリを作成してWAVファイルを処理
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for time_slot in available_slots:
+                try:
+                    print(f"📥 WAVファイル取得開始: {time_slot}.wav")
+                    
+                    # Vault APIからWAVファイルを取得
+                    temp_wav_path = await vault_service.fetch_wav_file(
+                        request.user_id, 
+                        request.date, 
+                        time_slot, 
+                        temp_dir
+                    )
+                    
+                    if temp_wav_path:
+                        fetched_files.append(f"{time_slot}.wav")
+                        
+                        print(f"🎵 特徴量タイムライン抽出開始: {time_slot}.wav")
+                        
+                        # 特徴量タイムライン抽出を実行
+                        features_result = emotion_service.extract_features_timeline(
+                            temp_wav_path,
+                            request.feature_set
+                        )
+                        
+                        # 注意: include_raw_features=falseでもOpenSMILEの場合は
+                        # 特徴量タイムラインが主要データなので削除しない
+                        # (Whisper APIとは異なる動作)
+                        
+                        features_results.append(features_result)
+                        
+                        # 個別のJSONファイルに保存 (Whisper APIと同じ仕様)
+                        individual_json_filename = f"{time_slot}.json"
+                        individual_json_path = output_dir / individual_json_filename
+                        
+                        with open(individual_json_path, 'w', encoding='utf-8') as f:
+                            import json
+                            json.dump(features_result.model_dump(), f, ensure_ascii=False, indent=2)
+                        
+                        saved_files.append(individual_json_filename)
+                        print(f"✅ 完了: {time_slot}.wav → {time_slot}.json ({len(features_result.features_timeline)}秒のタイムライン)")
+                        
+                    else:
+                        error_files.append(f"{time_slot}.wav")
+                        # エラー結果を追加
+                        from models import FeaturesTimelineResult
+                        error_result = FeaturesTimelineResult(
+                            date=request.date,
+                            slot=time_slot,
+                            filename=f"{time_slot}.wav",
+                            duration_seconds=0,
+                            features_timeline=[],
+                            error=f"Vault APIからのファイル取得に失敗: {time_slot}.wav"
+                        )
+                        features_results.append(error_result)
+                        
+                except Exception as e:
+                    error_files.append(f"{time_slot}.wav")
+                    print(f"❌ エラー: {time_slot}.wav - {str(e)}")
+                    
+                    # エラー結果を追加
+                    from models import FeaturesTimelineResult
+                    error_result = FeaturesTimelineResult(
+                        date=request.date,
+                        slot=time_slot,
+                        filename=f"{time_slot}.wav",
+                        duration_seconds=0,
+                        features_timeline=[],
+                        error=str(e)
+                    )
+                    features_results.append(error_result)
+        
+        # 統合レスポンス用のJSONファイルも作成（従来の仕様を維持）
+        features_filename = f"vault_features_timeline_{request.user_id}_{request.date}_{int(time.time())}.json"
+        features_output_path = output_dir / features_filename
         
         features_response = FeaturesTimelineResponse(
             success=True,
-            test_data_directory=str(test_data_dir.absolute()),
+            test_data_directory=f"Vault API: {vault_service.base_url}",
             feature_set=request.feature_set.value,
-            processed_files=len(wav_files),
-            saved_files=[features_filename],
+            processed_files=len(features_results),
+            saved_files=saved_files + [features_filename],  # 個別ファイル + 統合ファイル
             results=features_results,
             total_processing_time=time.time() - start_time,
-            message=f"test-dataフォルダの{len(wav_files)}個のWAVファイルを処理し、1秒ごとの特徴量タイムラインを生成しました"
+            message=f"Vault APIから{len(fetched_files)}個のWAVファイルを取得し、{len(saved_files)}個の個別JSONファイルを作成しました"
         )
         
         with open(features_output_path, 'w', encoding='utf-8') as f:
             import json
             json.dump(features_response.model_dump(), f, ensure_ascii=False, indent=2)
         
-        saved_files.append(features_filename)
+        print(f"\n=== Vault API連携による特徴量タイムライン抽出完了 ===")
+        print(f"📥 取得成功: {len(fetched_files)} ファイル")
+        print(f"🎵 処理完了: {len(features_results)} ファイル")
+        print(f"❌ エラー: {len(error_files)} ファイル")
+        print(f"💾 個別JSONファイル: {', '.join(saved_files)}")
+        print(f"💾 統合ファイル: {features_filename}")
+        print(f"⏱️ 総処理時間: {time.time() - start_time:.2f}秒")
+        print(f"=" * 50)
         
         return features_response
         
@@ -493,7 +556,7 @@ async def process_test_data(request: TimelineAnalysisRequest = None):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"test-data処理中にエラーが発生しました: {str(e)}"
+            detail=f"Vault API連携処理中にエラーが発生しました: {str(e)}"
         )
 
 

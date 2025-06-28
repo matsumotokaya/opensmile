@@ -35,10 +35,13 @@ OpenSMILEライブラリを使用した音声特徴量抽出と感情分析の�
 - `GET /download/{filename}` - JSONファイルダウンロード
 - `GET /results` - 分析結果ファイル一覧
 
-### test-data専用エンドポイント（NEW）
+### Vault API連携エンドポイント（NEW v4.0.0）
+
+- `POST /process/vault-data` - EC2 Vault APIからWAVファイルを取得して特徴量タイムラインを抽出
+
+### test-data専用エンドポイント
 
 - `GET /test-data/files` - test-dataフォルダ内のファイル一覧
-- `POST /process/test-data` - test-dataフォルダのWAVファイルから1秒ごとの特徴量タイムラインを抽出
 
 ## 使用方法
 
@@ -59,41 +62,54 @@ python3 main.py
 - **このAPIはポート8011で動作します**（ポート8000との競合を避けるため）
 - **Python3を使用してください**（`python`ではなく`python3`コマンドを使用）
 
-### test-data専用エンドポイントの使用例
+### Vault API連携エンドポイントの使用例（NEW）
 
 ```bash
-# test-dataフォルダ内のファイル確認
-curl http://localhost:8011/test-data/files
-
-# 1秒ごとの特徴量タイムライン抽出（結果はtest-dataフォルダにJSONで保存）
-curl -X POST http://localhost:8011/process/test-data \
+# EC2 Vault APIからWAVファイルを取得して特徴量タイムライン抽出
+curl -X POST http://localhost:8011/process/vault-data \
   -H "Content-Type: application/json" \
   -d '{
-    "analysis_type": "timeline",
+    "user_id": "user123",
+    "date": "2025-06-25",
     "feature_set": "eGeMAPSv02",
     "include_raw_features": false
   }'
+
+# test-dataフォルダ内のファイル確認
+curl http://localhost:8011/test-data/files
 ```
 
-**出力例:**
+**Vault API連携の特徴:**
+- EC2 Vault APIから自動でWAVファイルを取得
+- 個別ファイル保存: `20-30.wav` → `20-30.json`
+- 複数ファイル対応: 各WAVファイルごとに対応するJSONファイルを作成
+- 完全なeGeMAPS特徴量（25個）を1秒ごとのタイムラインで出力
+
+**個別JSONファイル出力例 (20-30.json):**
 ```json
 {
   "date": "2025-06-28",
-  "slot": "08:20-08:30",
-  "filename": "20-30.wav", 
-  "duration_seconds": 51,
+  "slot": "08:20-08:30", 
+  "filename": "20-30.wav",
+  "duration_seconds": 50,
   "features_timeline": [
     {
       "timestamp": "08:00:00",
       "features": {
-        "Loudness_sma3": 0.114,
-        "F0semitoneFrom27.5Hz_sma3nz": 8.861,
-        "alphaRatio_sma3": -12.275,
-        ...
-        (25個のeGeMAPS特徴量)
+        "Loudness_sma3": 0.06019328162074089,
+        "F0semitoneFrom27.5Hz_sma3nz": 0.0,
+        "alphaRatio_sma3": -7.842461109161377,
+        "hammarbergIndex_sma3": 16.497520446777344,
+        "mfcc1_sma3": 8.365259170532227,
+        "F1frequency_sma3nz": 788.834228515625,
+        "F2frequency_sma3nz": 1727.9415283203125,
+        "F3frequency_sma3nz": 2660.05126953125,
+        "(25個の完全なeGeMAPS特徴量)": "..."
       }
     }
-  ]
+  ],
+  "processing_time": 0.94,
+  "error": null
 }
 ```
 
@@ -137,13 +153,14 @@ curl -X POST http://localhost:8011/extract \
 }
 ```
 
-### test-data処理リクエスト
+### Vault API連携リクエスト（NEW）
 
 ```json
 {
-  "feature_set": "eGeMAPSv02",
-  "include_raw_features": true,
-  "analysis_type": "emotions"
+  "user_id": "user123",
+  "date": "2025-06-25",
+  "feature_set": "eGeMAPSv02", 
+  "include_raw_features": false
 }
 ```
 

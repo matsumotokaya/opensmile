@@ -217,6 +217,20 @@ class TimelineAnalysisRequest(BaseModel):
     )
 
 
+class VaultFetchRequest(BaseModel):
+    """Vault APIからのWAVファイル取得リクエスト"""
+    user_id: str = Field(description="ユーザーID (例: user123)")
+    date: str = Field(description="日付 (YYYY-MM-DD形式, 例: 2025-06-25)")
+    feature_set: Optional[FeatureSetEnum] = Field(
+        default=FeatureSetEnum.EGEMAPS_V02,
+        description="使用する特徴量セット"
+    )
+    include_raw_features: Optional[bool] = Field(
+        default=False,
+        description="生の特徴量データを含めるかどうか"
+    )
+
+
 class FeaturesTimelineResponse(BaseModel):
     """特徴量タイムライン抽出レスポンス"""
     success: bool = Field(description="処理成功フラグ")
