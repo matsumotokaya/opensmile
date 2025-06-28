@@ -12,9 +12,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import opensmile
-import aiohttp
-import aiofiles
-from models import FeatureSetEnum, FeatureExtractionResult, EmotionPrediction, VaultFileInfo
+import numpy as np
+from datetime import datetime, timedelta
+from models import (
+    FeatureSetEnum, 
+    FeatureExtractionResult, 
+    EmotionPrediction, 
+    PlutchikEmotionEnum,
+    EmotionTimelinePoint,
+    EmotionTimelineResult,
+    FeatureTimelinePoint,
+    FeaturesTimelineResult
+)
 
 
 class OpenSMILEService:
@@ -183,6 +192,8 @@ class EmotionAnalysisService:
         self.opensmile_service = OpenSMILEService()
         # 感情分析モデルの初期化（将来的に実装）
         self.emotion_model = None
+        # OpenSMILE特徴量セットマッピングを追加
+        self.feature_set_mapping = self.opensmile_service.feature_set_mapping
     
     def analyze_emotion(
         self, 
@@ -271,160 +282,265 @@ class EmotionAnalysisService:
             confidence=confidence,
             raw_scores=emotions
         )
-
-
-class VaultService:
-    """Vault API連携サービス"""
     
-    def __init__(self, vault_base_url: str = None):
-        # 環境変数またはデフォルトのVault APIベースURLを使用
-        import os
-        if vault_base_url is None:
-            vault_base_url = os.getenv('VAULT_BASE_URL', 'https://api.hey-watch.me')
-        self.vault_base_url = vault_base_url.rstrip('/')
-        self.session = None
-    
-    async def __aenter__(self):
-        """非同期コンテキストマネージャーの開始"""
-        import ssl
-        # SSL証明書検証を無効にする（開発環境用）
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        connector = aiohttp.TCPConnector(ssl=ssl_context)
-        self.session = aiohttp.ClientSession(connector=connector)
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """非同期コンテキストマネージャーの終了"""
-        if self.session:
-            await self.session.close()
-    
-    async def get_wav_files_list(self, user_id: str, date: str) -> List[VaultFileInfo]:
+    def analyze_emotion_timeline(
+        self, 
+        wav_file_path: str, 
+        feature_set: FeatureSetEnum = FeatureSetEnum.EGEMAPS_V02
+    ) -> EmotionTimelineResult:
         """
-        指定されたユーザーと日付のWAVファイルリストを取得
-        実際のVault APIは個別ファイルダウンロードのみサポートしているため、
-        一般的な時刻スロットを試してファイルの存在を確認
+        音声ファイルから1秒ごとの感情タイムラインを分析
         
         Args:
-            user_id: ユーザーID
-            date: 対象日付（YYYY-MM-DD形式）
+            wav_file_path: 音声ファイルのパス
+            feature_set: 使用する特徴量セット
             
         Returns:
-            List[VaultFileInfo]: ファイル情報のリスト
+            EmotionTimelineResult: タイムライン分析結果
         """
-        if not self.session:
-            raise RuntimeError("VaultService session not initialized. Use async with statement.")
-        
-        # 一般的な30分間隔の時刻スロット
-        time_slots = []
-        for hour in range(24):
-            for minute in [0, 30]:
-                slot = f"{hour:02d}-{minute:02d}"
-                time_slots.append(slot)
-        
-        vault_files = []
-        
-        # 各時刻スロットでファイルの存在を確認
-        for slot in time_slots:
-            try:
-                params = {"user_id": user_id, "date": date, "slot": slot}
-                
-                async with self.session.get(
-                    f"{self.vault_base_url}/download",
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=3)  # 短いタイムアウト
-                ) as response:
-                    if response.status == 200:
-                        # ファイルが存在する場合
-                        vault_file = VaultFileInfo(
-                            filename=f"{slot}.wav",
-                            file_id=slot,  # スロット名をIDとして使用
-                            size=None,
-                            upload_time=None
-                        )
-                        vault_files.append(vault_file)
-            except Exception:
-                # ファイルが存在しない場合は無視
-                continue
-        
-        return vault_files
-    
-    async def download_wav_file(self, user_id: str, date: str, slot: str, download_dir: Path) -> Path:
-        """
-        指定されたユーザー、日付、スロットのWAVファイルをダウンロード
-        実際のVault API仕様に合わせて修正
-        
-        Args:
-            user_id: ユーザーID
-            date: 日付（YYYY-MM-DD形式）
-            slot: 時刻スロット（HH-MM形式）
-            download_dir: ダウンロード先ディレクトリ
-            
-        Returns:
-            Path: ダウンロードされたファイルのパス
-        """
-        if not self.session:
-            raise RuntimeError("VaultService session not initialized. Use async with statement.")
+        start_time = time.time()
         
         try:
-            # ダウンロード先ディレクトリの作成
-            download_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{slot}.wav"
-            local_file_path = download_dir / filename
+            # OpenSMILEインスタンスを作成（LLD - Low Level Descriptorsを使用）
+            smile = opensmile.Smile(
+                feature_set=self.feature_set_mapping[feature_set],
+                feature_level=opensmile.FeatureLevel.LowLevelDescriptors,
+            )
             
-            # Vault APIからファイルをダウンロード
-            params = {"user_id": user_id, "date": date, "slot": slot}
+            # フレーム単位で特徴量を抽出
+            features_df = smile.process_file(wav_file_path)
             
-            async with self.session.get(
-                f"{self.vault_base_url}/download",
-                params=params
-            ) as response:
-                response.raise_for_status()
+            # 音声の長さを計算
+            duration_seconds = int(len(features_df) * 0.01)  # 10msフレーム → 秒
+            
+            # ファイル名から日付とスロットを推定（例: "08-30.wav" → "08:00-08:30"）
+            filename = Path(wav_file_path).stem
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # ファイル名からスロット情報を抽出
+            if '-' in filename and filename.replace('-', '').isdigit():
+                start_minute, end_minute = filename.split('-')
+                slot = f"08:{start_minute}-08:{end_minute}"
+            else:
+                slot = "08:00-08:30"  # デフォルト
+            
+            # 1秒ごとにタイムラインポイントを生成
+            timeline_points = []
+            
+            # 100フレーム = 1秒（10ms/フレーム）として計算
+            frames_per_second = 100
+            
+            for second in range(min(duration_seconds, 1800)):  # 最大30分
+                # その秒に対応するフレーム範囲を取得
+                start_frame = second * frames_per_second
+                end_frame = min((second + 1) * frames_per_second, len(features_df))
                 
-                # ファイルを非同期で書き込み
-                async with aiofiles.open(local_file_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        await f.write(chunk)
-                
-                return local_file_path
-                
+                if start_frame < len(features_df):
+                    # その秒の特徴量を平均
+                    second_features = features_df.iloc[start_frame:end_frame].mean()
+                    features_dict = second_features.to_dict()
+                    
+                    # Plutchikの8感情で分析
+                    emotion_scores = self._analyze_plutchik_emotions(features_dict)
+                    primary_emotion = max(emotion_scores.keys(), key=lambda k: emotion_scores[k])
+                    
+                    # タイムスタンプを生成（HH:MM:SS形式）
+                    timestamp = f"08:{int(second//60):02d}:{second%60:02d}"
+                    
+                    timeline_point = EmotionTimelinePoint(
+                        timestamp=timestamp,
+                        emotion=PlutchikEmotionEnum(primary_emotion),
+                        scores=emotion_scores
+                    )
+                    
+                    timeline_points.append(timeline_point)
+            
+            processing_time = time.time() - start_time
+            
+            return EmotionTimelineResult(
+                date=date_str,
+                slot=slot,
+                filename=Path(wav_file_path).name,
+                duration_seconds=duration_seconds,
+                emotion_timeline=timeline_points,
+                processing_time=processing_time
+            )
+            
         except Exception as e:
-            raise Exception(f"Failed to download file {filename} (user_id: {user_id}, date: {date}, slot: {slot}): {str(e)}")
+            processing_time = time.time() - start_time
+            return EmotionTimelineResult(
+                date=datetime.now().strftime("%Y-%m-%d"),
+                slot="unknown",
+                filename=Path(wav_file_path).name,
+                duration_seconds=0,
+                emotion_timeline=[],
+                processing_time=processing_time,
+                error=str(e)
+            )
     
-    async def download_all_wav_files(self, user_id: str, date: str, download_dir: Path) -> List[Path]:
+    def _analyze_plutchik_emotions(self, features: Dict[str, float]) -> Dict[str, float]:
         """
-        指定されたユーザーと日付のすべてのWAVファイルをダウンロード
+        Plutchikの8基本感情で分析
         
         Args:
-            user_id: ユーザーID  
-            date: 対象日付（YYYY-MM-DD形式）
-            download_dir: ダウンロード先ディレクトリ
+            features: 抽出された特徴量
             
         Returns:
-            List[Path]: ダウンロードされたファイルのパスリスト
+            Dict[str, float]: 8感情のスコア辞書
         """
-        # ファイルリストを取得
-        vault_files = await self.get_wav_files_list(user_id, date)
+        # F0（基本周波数）関連の特徴量
+        f0_mean = features.get('F0final_sma', 0.0)
+        f0_std = features.get('F0final_sma_de', 0.0)
         
-        downloaded_files = []
+        # エネルギー関連
+        energy = features.get('audSpec_Rfilt_sma[0]', 0.0)
         
-        # 各ファイルをダウンロード
-        for vault_file in vault_files:
-            if vault_file.filename:
-                try:
-                    # Vault APIの仕様に基づいてファイルパスを構築
-                    vault_file_path = f"data_accounts/{user_id}/{date}/raw/{vault_file.filename}"
+        # スペクトル特徴量
+        spectral_centroid = features.get('audSpec_Rfilt_sma[1]', 0.0)
+        
+        # 初期スコア
+        scores = {
+            PlutchikEmotionEnum.ANGER.value: 0.0,
+            PlutchikEmotionEnum.JOY.value: 0.0,
+            PlutchikEmotionEnum.SADNESS.value: 0.0,
+            PlutchikEmotionEnum.FEAR.value: 0.0,
+            PlutchikEmotionEnum.DISGUST.value: 0.0,
+            PlutchikEmotionEnum.TRUST.value: 0.0,
+            PlutchikEmotionEnum.SURPRISE.value: 0.0,
+            PlutchikEmotionEnum.ANTICIPATION.value: 0.0
+        }
+        
+        # ルールベースの感情分析
+        
+        # Anger: 高いF0変動 + 高エネルギー
+        if abs(f0_std) > 0.5 and energy > 0.1:
+            scores[PlutchikEmotionEnum.ANGER.value] = min(0.8, abs(f0_std) * energy * 2)
+        
+        # Joy: 高めのF0 + 安定したエネルギー
+        if f0_mean > 0.1 and energy > 0.05:
+            scores[PlutchikEmotionEnum.JOY.value] = min(0.7, f0_mean * energy * 3)
+        
+        # Sadness: 低F0 + 低エネルギー
+        if f0_mean < -0.1 and energy < 0.05:
+            scores[PlutchikEmotionEnum.SADNESS.value] = min(0.6, abs(f0_mean) * (1 - energy) * 2)
+        
+        # Fear: 高いF0変動 + 中程度のエネルギー
+        if abs(f0_std) > 0.3 and 0.03 < energy < 0.08:
+            scores[PlutchikEmotionEnum.FEAR.value] = min(0.6, abs(f0_std) * energy * 4)
+        
+        # Surprise: 急激なF0変化
+        if abs(f0_std) > 0.6:
+            scores[PlutchikEmotionEnum.SURPRISE.value] = min(0.7, abs(f0_std) * 1.2)
+        
+        # Trust: 安定したF0 + 中程度のエネルギー
+        if abs(f0_std) < 0.2 and 0.04 < energy < 0.1:
+            scores[PlutchikEmotionEnum.TRUST.value] = min(0.5, (1 - abs(f0_std)) * energy * 2)
+        
+        # Anticipation: F0の上昇傾向
+        if f0_mean > 0.05 and abs(f0_std) > 0.2:
+            scores[PlutchikEmotionEnum.ANTICIPATION.value] = min(0.6, f0_mean * abs(f0_std) * 3)
+        
+        # Disgust: 低い音域 + 特定のスペクトル特性
+        if spectral_centroid < -0.1 and energy > 0.02:
+            scores[PlutchikEmotionEnum.DISGUST.value] = min(0.5, abs(spectral_centroid) * energy * 2)
+        
+        # スコアを正規化（softmax風）
+        total = sum(scores.values())
+        if total > 0:
+            scores = {k: v / total for k, v in scores.items()}
+        else:
+            # デフォルトでTrustを設定
+            scores[PlutchikEmotionEnum.TRUST.value] = 1.0
+        
+        return scores
+    
+    def extract_features_timeline(
+        self,
+        wav_file_path: str,
+        feature_set: FeatureSetEnum = FeatureSetEnum.EGEMAPS_V02
+    ) -> FeaturesTimelineResult:
+        """
+        音声ファイルから1秒ごとの特徴量タイムラインを抽出（感情分析なし）
+        
+        Args:
+            wav_file_path: 音声ファイルのパス
+            feature_set: 使用する特徴量セット
+            
+        Returns:
+            FeaturesTimelineResult: 特徴量タイムライン結果
+        """
+        start_time = time.time()
+        
+        try:
+            # OpenSMILEインスタンスを作成（LLD - Low Level Descriptorsを使用）
+            smile = opensmile.Smile(
+                feature_set=self.feature_set_mapping[feature_set],
+                feature_level=opensmile.FeatureLevel.LowLevelDescriptors,
+            )
+            
+            # フレーム単位で特徴量を抽出
+            features_df = smile.process_file(wav_file_path)
+            
+            # 音声の長さを計算
+            duration_seconds = int(len(features_df) * 0.01)  # 10msフレーム → 秒
+            
+            # ファイル名から日付とスロットを推定（例: "20-30.wav" → "08:20-08:30"）
+            filename = Path(wav_file_path).stem
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # ファイル名からスロット情報を抽出
+            if '-' in filename and filename.replace('-', '').isdigit():
+                start_minute, end_minute = filename.split('-')
+                slot = f"08:{start_minute}-08:{end_minute}"
+            else:
+                slot = "08:00-08:30"  # デフォルト
+            
+            # 1秒ごとにタイムラインポイントを生成
+            timeline_points = []
+            
+            # 100フレーム = 1秒（10ms/フレーム）として計算
+            frames_per_second = 100
+            
+            for second in range(min(duration_seconds, 1800)):  # 最大30分
+                # その秒に対応するフレーム範囲を取得
+                start_frame = second * frames_per_second
+                end_frame = min((second + 1) * frames_per_second, len(features_df))
+                
+                if start_frame < len(features_df):
+                    # その秒の特徴量を平均
+                    second_features = features_df.iloc[start_frame:end_frame].mean()
+                    features_dict = second_features.to_dict()
                     
-                    local_file_path = await self.download_wav_file(
-                        vault_file_path,
-                        vault_file.filename,
-                        download_dir
+                    # タイムスタンプを生成（HH:MM:SS形式）
+                    timestamp = f"08:{int(second//60):02d}:{second%60:02d}"
+                    
+                    timeline_point = FeatureTimelinePoint(
+                        timestamp=timestamp,
+                        features=features_dict
                     )
-                    downloaded_files.append(local_file_path)
-                except Exception as e:
-                    # 個別ファイルのダウンロードエラーはログに記録して続行
-                    print(f"Warning: Failed to download {vault_file.filename}: {str(e)}")
-        
-        return downloaded_files
+                    
+                    timeline_points.append(timeline_point)
+            
+            processing_time = time.time() - start_time
+            
+            return FeaturesTimelineResult(
+                date=date_str,
+                slot=slot,
+                filename=Path(wav_file_path).name,
+                duration_seconds=duration_seconds,
+                features_timeline=timeline_points,
+                processing_time=processing_time
+            )
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            return FeaturesTimelineResult(
+                date=datetime.now().strftime("%Y-%m-%d"),
+                slot="unknown",
+                filename=Path(wav_file_path).name,
+                duration_seconds=0,
+                features_timeline=[],
+                processing_time=processing_time,
+                error=str(e)
+            )
+

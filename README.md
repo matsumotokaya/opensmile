@@ -13,7 +13,6 @@ OpenSMILEライブラリを使用した音声特徴量抽出と感情分析の�
 - **複数の特徴量セット対応**: eGeMAPSv02, ComParE_2016, GeMAPSなど
 - **バッチ処理**: 複数のWAVファイルを一括処理
 - **JSON出力**: 分析結果をJSONファイルで保存・エクスポート
-- **Vault API連携**: 外部ストレージからのファイル取得・分析
 
 ## API仕様
 
@@ -39,75 +38,79 @@ OpenSMILEライブラリを使用した音声特徴量抽出と感情分析の�
 ### test-data専用エンドポイント（NEW）
 
 - `GET /test-data/files` - test-dataフォルダ内のファイル一覧
-- `POST /process/test-data` - test-dataフォルダのWAVファイルを処理してJSONで保存
-
-### Vault連携
-
-- `POST /analyze/vault` - Vault APIから音声ファイルを取得して分析
+- `POST /process/test-data` - test-dataフォルダのWAVファイルから1秒ごとの特徴量タイムラインを抽出
 
 ## 使用方法
 
 ### サーバー起動
 
 ```bash
-# 依存関係インストール
-pip install -r requirements.txt
+# 依存関係インストール（Python3を使用）
+pip3 install -r requirements.txt
 
-# サーバー起動
-uvicorn main:app --host 0.0.0.0 --port 8000
+# サーバー起動（ポート8011を使用）
+uvicorn main:app --host 0.0.0.0 --port 8011
 
-# または開発モード
-python main.py
+# または開発モード（Python3で実行）
+python3 main.py
 ```
+
+**注意事項:**
+- **このAPIはポート8011で動作します**（ポート8000との競合を避けるため）
+- **Python3を使用してください**（`python`ではなく`python3`コマンドを使用）
 
 ### test-data専用エンドポイントの使用例
 
 ```bash
 # test-dataフォルダ内のファイル確認
-curl http://localhost:8000/test-data/files
+curl http://localhost:8011/test-data/files
 
-# 感情分析実行（結果はtest-dataフォルダにJSONで保存）
-curl -X POST http://localhost:8000/process/test-data \
+# 1秒ごとの特徴量タイムライン抽出（結果はtest-dataフォルダにJSONで保存）
+curl -X POST http://localhost:8011/process/test-data \
   -H "Content-Type: application/json" \
   -d '{
-    "analysis_type": "emotions",
+    "analysis_type": "timeline",
     "feature_set": "eGeMAPSv02",
-    "include_raw_features": true
+    "include_raw_features": false
   }'
+```
 
-# 特徴量のみ抽出
-curl -X POST http://localhost:8000/process/test-data \
-  -H "Content-Type: application/json" \
-  -d '{
-    "analysis_type": "features",
-    "feature_set": "eGeMAPSv02",
-    "include_raw_features": true
-  }'
-
-# 特徴量抽出と感情分析の両方
-curl -X POST http://localhost:8000/process/test-data \
-  -H "Content-Type: application/json" \
-  -d '{
-    "analysis_type": "both",
-    "feature_set": "eGeMAPSv02",
-    "include_raw_features": true
-  }'
+**出力例:**
+```json
+{
+  "date": "2025-06-28",
+  "slot": "08:20-08:30",
+  "filename": "20-30.wav", 
+  "duration_seconds": 51,
+  "features_timeline": [
+    {
+      "timestamp": "08:00:00",
+      "features": {
+        "Loudness_sma3": 0.114,
+        "F0semitoneFrom27.5Hz_sma3nz": 8.861,
+        "alphaRatio_sma3": -12.275,
+        ...
+        (25個のeGeMAPS特徴量)
+      }
+    }
+  ]
+}
 ```
 
 ### 基本的な使用例
 
 ```bash
 # ヘルスチェック
-curl http://localhost:8000/health
+curl http://localhost:8011/health
 
 # 利用可能な特徴量セット確認
-curl http://localhost:8000/features
+curl http://localhost:8011/features
 
 # カレントディレクトリのWAVファイル一覧
-curl http://localhost:8000/files
+curl http://localhost:8011/files
 
 # 感情分析実行
-curl -X POST http://localhost:8000/analyze \
+curl -X POST http://localhost:8011/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "feature_set": "eGeMAPSv02",
@@ -115,7 +118,7 @@ curl -X POST http://localhost:8000/analyze \
   }'
 
 # 特徴量抽出のみ
-curl -X POST http://localhost:8000/extract \
+curl -X POST http://localhost:8011/extract \
   -H "Content-Type: application/json" \
   -d '{
     "feature_set": "eGeMAPSv02",
@@ -144,31 +147,35 @@ curl -X POST http://localhost:8000/extract \
 }
 ```
 
-### 感情分析レスポンス例
+### 特徴量タイムライン分析レスポンス例
 
 ```json
 {
-  "feature_set": "eGeMAPSv02",
+  "success": true,
+  "feature_set": "eGeMAPSv02", 
   "processed_files": 1,
   "results": [
     {
+      "date": "2025-06-28",
+      "slot": "08:20-08:30",
       "filename": "20-30.wav",
-      "primary_emotion": {
-        "emotion": "sad",
-        "confidence": 0.6,
-        "raw_scores": {
-          "happy": 0.0,
-          "sad": 0.6,
-          "angry": 0.0,
-          "neutral": 0.4,
-          "excited": 0.0
+      "duration_seconds": 51,
+      "features_timeline": [
+        {
+          "timestamp": "08:00:00",
+          "features": {
+            "Loudness_sma3": 0.114,
+            "F0semitoneFrom27.5Hz_sma3nz": 8.861,
+            "alphaRatio_sma3": -12.275,
+            "hammarbergIndex_sma3": 20.948,
+            "mfcc1_sma3": 17.559,
+            "F1frequency_sma3nz": 733.330,
+            "F2frequency_sma3nz": 1745.846,
+            "F3frequency_sma3nz": 2674.963,
+            "(25個のeGeMAPS特徴量)": "..."
+          }
         }
-      },
-      "feature_extraction": {
-        "filename": "20-30.wav",
-        "feature_count": 88,
-        "features": { "...": "..." }
-      }
+      ]
     }
   ],
   "total_processing_time": 1.2
@@ -199,7 +206,6 @@ opensmile/
 - **OpenSMILE 2.5.1** - 音響特徴量抽出ライブラリ
 - **Pandas 2.0.3** - データ処理
 - **Pydantic 2.5.0** - データ検証・シリアライゼーション
-- **aiohttp 3.9.1** - 非同期HTTP通信（Vault連携用）
 
 ### 対応特徴量セット
 
@@ -209,21 +215,24 @@ opensmile/
 - **eGeMAPS**: 88特徴量
 - **emobase**: 感情分析特化特徴量セット
 
-### 感情分類
+### 特徴量タイムライン（NEW v3.0.0）
 
-現在はルールベースの簡易実装：
-- **happy**: 幸せ・喜び
-- **sad**: 悲しみ
-- **angry**: 怒り
-- **neutral**: 中性・平常
-- **excited**: 興奮・エネルギッシュ
+1秒ごとのeGeMAPS特徴量を抽出：
+- **Loudness_sma3**: 音声の音量
+- **F0semitoneFrom27.5Hz_sma3nz**: 基本周波数（半音階）
+- **alphaRatio_sma3**: アルファ比（スペクトル特性）
+- **hammarbergIndex_sma3**: ハンマーバーグインデックス
+- **mfcc1-4_sma3**: メル周波数ケプストラム係数
+- **F1-F3frequency_sma3nz**: フォルマント周波数
+- **その他**: jitter、shimmer、HNR等の音響特徴量
 
 ## 開発
 
 ### テスト実行
 
 ```bash
-pytest test_api.py -v
+# Python3環境でテスト実行
+python3 -m pytest test_api.py -v
 ```
 
 ### Docker使用
@@ -233,7 +242,7 @@ pytest test_api.py -v
 docker build -t opensmile-api .
 
 # コンテナ実行
-docker run -p 8000:8000 opensmile-api
+docker run -p 8011:8011 opensmile-api
 ```
 
 ## 注意事項
@@ -243,6 +252,13 @@ docker run -p 8000:8000 opensmile-api
 - 感情分析は現在ルールベースの簡易実装です（将来的に機械学習モデルに置き換え予定）
 
 ## 変更履歴
+
+### v3.0.0 (2025-06-28)
+- **特徴量タイムライン機能**: 1秒ごとのeGeMAPS特徴量抽出
+- **処理ステップ分離**: 特徴量抽出と感情分析を完全分離
+- **新出力形式**: `features_timeline_*.json`で素データ出力
+- **Plutchik8感情対応**: 感情分析モデル（将来実装用）
+- **ポート変更**: 8000 → 8011（競合回避）
 
 ### v2.0.0 (2024-12-28)
 - test-data専用エンドポイント追加（`/process/test-data`, `/test-data/files`）
@@ -254,4 +270,3 @@ docker run -p 8000:8000 opensmile-api
 - 初回リリース
 - OpenSMILE特徴量抽出機能
 - 基本的な感情分析機能
-- Vault API連携機能

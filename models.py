@@ -6,6 +6,7 @@ Pydanticモデル定義
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 from enum import Enum
+from datetime import datetime
 
 
 class FeatureSetEnum(str, Enum):
@@ -17,6 +18,18 @@ class FeatureSetEnum(str, Enum):
     EGEMAPS_V01B = "eGeMAPSv01b"
     EGEMAPS_V02 = "eGeMAPSv02"
     EMOBASE = "emobase"
+
+
+class PlutchikEmotionEnum(str, Enum):
+    """Plutchikの8基本感情"""
+    ANGER = "anger"
+    JOY = "joy" 
+    SADNESS = "sadness"
+    FEAR = "fear"
+    DISGUST = "disgust"
+    TRUST = "trust"
+    SURPRISE = "surprise"
+    ANTICIPATION = "anticipation"
 
 
 class FeatureExtractionRequest(BaseModel):
@@ -136,41 +149,6 @@ class ErrorResponse(BaseModel):
     error_code: Optional[str] = Field(None, description="エラーコード")
 
 
-# Vault API関連のモデル
-class VaultAnalysisRequest(BaseModel):
-    """Vault分析リクエスト"""
-    user_id: str = Field(description="ユーザーID")
-    date: str = Field(description="対象日付（YYYY-MM-DD形式）")
-    feature_set: Optional[FeatureSetEnum] = Field(
-        default=FeatureSetEnum.EGEMAPS_V02,
-        description="使用する特徴量セット"
-    )
-    include_raw_features: Optional[bool] = Field(
-        default=False,
-        description="生の特徴量データを含めるかどうか"
-    )
-
-
-class VaultFileInfo(BaseModel):
-    """Vaultファイル情報"""
-    filename: str = Field(description="ファイル名")
-    file_id: Optional[str] = Field(None, description="ファイルID")
-    size: Optional[int] = Field(None, description="ファイルサイズ")
-    upload_time: Optional[str] = Field(None, description="アップロード時間")
-
-
-class VaultAnalysisResponse(BaseModel):
-    """Vault分析レスポンス"""
-    user_id: str = Field(description="ユーザーID")
-    date: str = Field(description="対象日付")
-    feature_set: str = Field(description="使用された特徴量セット")
-    downloaded_files: int = Field(description="ダウンロードしたファイル数")
-    processed_files: int = Field(description="処理に成功したファイル数")
-    failed_files: int = Field(description="処理に失敗したファイル数")
-    results: List[EmotionAnalysisResult] = Field(description="分析結果のリスト")
-    total_processing_time: Optional[float] = Field(None, description="総処理時間（秒）")
-    vault_files: Optional[List[VaultFileInfo]] = Field(None, description="Vaultから取得したファイル情報")
-
 
 class TestDataRequest(BaseModel):
     """テストデータ処理リクエスト"""
@@ -186,6 +164,81 @@ class TestDataRequest(BaseModel):
         default="both",
         description="分析タイプ: 'features', 'emotions', 'both'"
     )
+
+
+class FeatureTimelinePoint(BaseModel):
+    """1秒ごとの特徴量抽出ポイント"""
+    timestamp: str = Field(description="時刻 (HH:MM:SS形式)")
+    features: Dict[str, float] = Field(description="eGeMAPS特徴量（88個）")
+
+
+class FeaturesTimelineResult(BaseModel):
+    """特徴量タイムライン抽出結果"""
+    date: str = Field(description="分析対象日 (YYYY-MM-DD形式)")
+    slot: str = Field(description="30分スロット (HH:MM-HH:MM形式)")
+    filename: str = Field(description="分析されたファイル名")
+    duration_seconds: int = Field(description="音声の長さ（秒）")
+    features_timeline: List[FeatureTimelinePoint] = Field(description="1秒ごとの特徴量タイムライン")
+    processing_time: Optional[float] = Field(None, description="処理時間（秒）")
+    error: Optional[str] = Field(None, description="エラーメッセージ（エラー時）")
+
+
+class EmotionTimelinePoint(BaseModel):
+    """1秒ごとの感情分析ポイント"""
+    timestamp: str = Field(description="時刻 (HH:MM:SS形式)")
+    emotion: PlutchikEmotionEnum = Field(description="予測された感情")
+    scores: Dict[str, float] = Field(description="Plutchikの8感情に対するスコア")
+
+
+class EmotionTimelineResult(BaseModel):
+    """感情タイムライン分析結果"""
+    date: str = Field(description="分析対象日 (YYYY-MM-DD形式)")
+    slot: str = Field(description="30分スロット (HH:MM-HH:MM形式)")
+    filename: str = Field(description="分析されたファイル名")
+    duration_seconds: int = Field(description="音声の長さ（秒）")
+    emotion_timeline: List[EmotionTimelinePoint] = Field(description="1秒ごとの感情タイムライン")
+    processing_time: Optional[float] = Field(None, description="処理時間（秒）")
+    error: Optional[str] = Field(None, description="エラーメッセージ（エラー時）")
+
+
+class TimelineAnalysisRequest(BaseModel):
+    """タイムライン分析リクエスト"""
+    feature_set: Optional[FeatureSetEnum] = Field(
+        default=FeatureSetEnum.EGEMAPS_V02,
+        description="使用する特徴量セット"
+    )
+    include_raw_features: Optional[bool] = Field(
+        default=False,
+        description="生の特徴量データを含めるかどうか"
+    )
+    analysis_type: str = Field(
+        default="timeline",
+        description="分析タイプ: 'features', 'emotions', 'both', 'timeline'"
+    )
+
+
+class FeaturesTimelineResponse(BaseModel):
+    """特徴量タイムライン抽出レスポンス"""
+    success: bool = Field(description="処理成功フラグ")
+    test_data_directory: str = Field(description="処理対象ディレクトリ")
+    feature_set: str = Field(description="使用された特徴量セット")
+    processed_files: int = Field(description="処理されたファイル数")
+    saved_files: List[str] = Field(description="保存されたJSONファイルのリスト")
+    results: List[FeaturesTimelineResult] = Field(description="特徴量タイムライン結果のリスト")
+    total_processing_time: Optional[float] = Field(None, description="総処理時間（秒）")
+    message: str = Field(description="処理結果メッセージ")
+
+
+class TimelineAnalysisResponse(BaseModel):
+    """タイムライン分析レスポンス"""
+    success: bool = Field(description="処理成功フラグ")
+    test_data_directory: str = Field(description="処理対象ディレクトリ")
+    feature_set: str = Field(description="使用された特徴量セット")
+    processed_files: int = Field(description="処理されたファイル数")
+    saved_files: List[str] = Field(description="保存されたJSONファイルのリスト")
+    results: List[EmotionTimelineResult] = Field(description="タイムライン分析結果のリスト")
+    total_processing_time: Optional[float] = Field(None, description="総処理時間（秒）")
+    message: str = Field(description="処理結果メッセージ")
 
 
 class TestDataResponse(BaseModel):
