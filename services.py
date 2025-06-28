@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import opensmile
-from models import FeatureSetEnum, FeatureExtractionResult, EmotionPrediction
+import aiohttp
+import aiofiles
+from models import FeatureSetEnum, FeatureExtractionResult, EmotionPrediction, VaultFileInfo
 
 
 class OpenSMILEService:
@@ -269,3 +271,160 @@ class EmotionAnalysisService:
             confidence=confidence,
             raw_scores=emotions
         )
+
+
+class VaultService:
+    """Vault API連携サービス"""
+    
+    def __init__(self, vault_base_url: str = None):
+        # 環境変数またはデフォルトのVault APIベースURLを使用
+        import os
+        if vault_base_url is None:
+            vault_base_url = os.getenv('VAULT_BASE_URL', 'https://api.hey-watch.me')
+        self.vault_base_url = vault_base_url.rstrip('/')
+        self.session = None
+    
+    async def __aenter__(self):
+        """非同期コンテキストマネージャーの開始"""
+        import ssl
+        # SSL証明書検証を無効にする（開発環境用）
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        self.session = aiohttp.ClientSession(connector=connector)
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """非同期コンテキストマネージャーの終了"""
+        if self.session:
+            await self.session.close()
+    
+    async def get_wav_files_list(self, user_id: str, date: str) -> List[VaultFileInfo]:
+        """
+        指定されたユーザーと日付のWAVファイルリストを取得
+        実際のVault APIは個別ファイルダウンロードのみサポートしているため、
+        一般的な時刻スロットを試してファイルの存在を確認
+        
+        Args:
+            user_id: ユーザーID
+            date: 対象日付（YYYY-MM-DD形式）
+            
+        Returns:
+            List[VaultFileInfo]: ファイル情報のリスト
+        """
+        if not self.session:
+            raise RuntimeError("VaultService session not initialized. Use async with statement.")
+        
+        # 一般的な30分間隔の時刻スロット
+        time_slots = []
+        for hour in range(24):
+            for minute in [0, 30]:
+                slot = f"{hour:02d}-{minute:02d}"
+                time_slots.append(slot)
+        
+        vault_files = []
+        
+        # 各時刻スロットでファイルの存在を確認
+        for slot in time_slots:
+            try:
+                params = {"user_id": user_id, "date": date, "slot": slot}
+                
+                async with self.session.get(
+                    f"{self.vault_base_url}/download",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=3)  # 短いタイムアウト
+                ) as response:
+                    if response.status == 200:
+                        # ファイルが存在する場合
+                        vault_file = VaultFileInfo(
+                            filename=f"{slot}.wav",
+                            file_id=slot,  # スロット名をIDとして使用
+                            size=None,
+                            upload_time=None
+                        )
+                        vault_files.append(vault_file)
+            except Exception:
+                # ファイルが存在しない場合は無視
+                continue
+        
+        return vault_files
+    
+    async def download_wav_file(self, user_id: str, date: str, slot: str, download_dir: Path) -> Path:
+        """
+        指定されたユーザー、日付、スロットのWAVファイルをダウンロード
+        実際のVault API仕様に合わせて修正
+        
+        Args:
+            user_id: ユーザーID
+            date: 日付（YYYY-MM-DD形式）
+            slot: 時刻スロット（HH-MM形式）
+            download_dir: ダウンロード先ディレクトリ
+            
+        Returns:
+            Path: ダウンロードされたファイルのパス
+        """
+        if not self.session:
+            raise RuntimeError("VaultService session not initialized. Use async with statement.")
+        
+        try:
+            # ダウンロード先ディレクトリの作成
+            download_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{slot}.wav"
+            local_file_path = download_dir / filename
+            
+            # Vault APIからファイルをダウンロード
+            params = {"user_id": user_id, "date": date, "slot": slot}
+            
+            async with self.session.get(
+                f"{self.vault_base_url}/download",
+                params=params
+            ) as response:
+                response.raise_for_status()
+                
+                # ファイルを非同期で書き込み
+                async with aiofiles.open(local_file_path, 'wb') as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        await f.write(chunk)
+                
+                return local_file_path
+                
+        except Exception as e:
+            raise Exception(f"Failed to download file {filename} (user_id: {user_id}, date: {date}, slot: {slot}): {str(e)}")
+    
+    async def download_all_wav_files(self, user_id: str, date: str, download_dir: Path) -> List[Path]:
+        """
+        指定されたユーザーと日付のすべてのWAVファイルをダウンロード
+        
+        Args:
+            user_id: ユーザーID  
+            date: 対象日付（YYYY-MM-DD形式）
+            download_dir: ダウンロード先ディレクトリ
+            
+        Returns:
+            List[Path]: ダウンロードされたファイルのパスリスト
+        """
+        # ファイルリストを取得
+        vault_files = await self.get_wav_files_list(user_id, date)
+        
+        downloaded_files = []
+        
+        # 各ファイルをダウンロード
+        for vault_file in vault_files:
+            if vault_file.filename:
+                try:
+                    # Vault APIの仕様に基づいてファイルパスを構築
+                    vault_file_path = f"data_accounts/{user_id}/{date}/raw/{vault_file.filename}"
+                    
+                    local_file_path = await self.download_wav_file(
+                        vault_file_path,
+                        vault_file.filename,
+                        download_dir
+                    )
+                    downloaded_files.append(local_file_path)
+                except Exception as e:
+                    # 個別ファイルのダウンロードエラーはログに記録して続行
+                    print(f"Warning: Failed to download {vault_file.filename}: {str(e)}")
+        
+        return downloaded_files

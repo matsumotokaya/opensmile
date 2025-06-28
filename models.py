@@ -134,3 +134,67 @@ class ErrorResponse(BaseModel):
     error: str = Field(description="エラーメッセージ")
     detail: Optional[str] = Field(None, description="詳細なエラー情報")
     error_code: Optional[str] = Field(None, description="エラーコード")
+
+
+# Vault API関連のモデル
+class VaultAnalysisRequest(BaseModel):
+    """Vault分析リクエスト"""
+    user_id: str = Field(description="ユーザーID")
+    date: str = Field(description="対象日付（YYYY-MM-DD形式）")
+    feature_set: Optional[FeatureSetEnum] = Field(
+        default=FeatureSetEnum.EGEMAPS_V02,
+        description="使用する特徴量セット"
+    )
+    include_raw_features: Optional[bool] = Field(
+        default=False,
+        description="生の特徴量データを含めるかどうか"
+    )
+
+
+class VaultFileInfo(BaseModel):
+    """Vaultファイル情報"""
+    filename: str = Field(description="ファイル名")
+    file_id: Optional[str] = Field(None, description="ファイルID")
+    size: Optional[int] = Field(None, description="ファイルサイズ")
+    upload_time: Optional[str] = Field(None, description="アップロード時間")
+
+
+class VaultAnalysisResponse(BaseModel):
+    """Vault分析レスポンス"""
+    user_id: str = Field(description="ユーザーID")
+    date: str = Field(description="対象日付")
+    feature_set: str = Field(description="使用された特徴量セット")
+    downloaded_files: int = Field(description="ダウンロードしたファイル数")
+    processed_files: int = Field(description="処理に成功したファイル数")
+    failed_files: int = Field(description="処理に失敗したファイル数")
+    results: List[EmotionAnalysisResult] = Field(description="分析結果のリスト")
+    total_processing_time: Optional[float] = Field(None, description="総処理時間（秒）")
+    vault_files: Optional[List[VaultFileInfo]] = Field(None, description="Vaultから取得したファイル情報")
+
+
+class TestDataRequest(BaseModel):
+    """テストデータ処理リクエスト"""
+    feature_set: Optional[FeatureSetEnum] = Field(
+        default=FeatureSetEnum.EGEMAPS_V02,
+        description="使用する特徴量セット"
+    )
+    include_raw_features: Optional[bool] = Field(
+        default=True,
+        description="生の特徴量データを含めるかどうか"
+    )
+    analysis_type: str = Field(
+        default="both",
+        description="分析タイプ: 'features', 'emotions', 'both'"
+    )
+
+
+class TestDataResponse(BaseModel):
+    """テストデータ処理レスポンス"""
+    success: bool = Field(description="処理成功フラグ")
+    test_data_directory: str = Field(description="処理対象ディレクトリ")
+    feature_set: str = Field(description="使用された特徴量セット")
+    processed_files: int = Field(description="処理されたファイル数")
+    saved_files: List[str] = Field(description="保存されたJSONファイルのリスト")
+    results: List[EmotionAnalysisResult] = Field(description="分析結果のリスト")
+    total_processing_time: Optional[float] = Field(None, description="総処理時間（秒）")
+    message: str = Field(description="処理結果メッセージ")
