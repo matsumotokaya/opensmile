@@ -15,37 +15,23 @@ from fastapi.responses import JSONResponse, FileResponse
 import opensmile
 
 from models import (
-    FeatureSetEnum,
-    FeatureExtractionRequest,
-    FeatureExtractionResponse,
-    EmotionAnalysisResponse,
-    EmotionAnalysisResult,
     HealthResponse,
-    AvailableFeaturesResponse,
-    FileListResponse,
-    ExportRequest,
-    ExportResponse,
     ErrorResponse,
-    TestDataRequest,
-    TestDataResponse,
-    TimelineAnalysisRequest,
-    TimelineAnalysisResponse,
     FeaturesTimelineResponse,
     VaultFetchRequest
 )
-from services import OpenSMILEService, EmotionAnalysisService, VaultAPIService
+from services import EmotionAnalysisService, VaultAPIService
 
 # FastAPIアプリケーションの初期化
 app = FastAPI(
-    title="OpenSMILE感情分析API",
-    description="OpenSMILEを使用した音声特徴量抽出と感情分析のためのAPI",
-    version="2.0.0",
+    title="OpenSMILE Vault API連携サービス",
+    description="OpenSMILEを使用したVault API連携による音声特徴量抽出サービス",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
 # サービスの初期化
-opensmile_service = OpenSMILEService()
 emotion_service = EmotionAnalysisService()
 vault_service = VaultAPIService()
 
@@ -54,8 +40,8 @@ vault_service = VaultAPIService()
 async def root():
     """ルートエンドポイント"""
     return {
-        "message": "OpenSMILE感情分析API",
-        "version": "2.0.0",
+        "message": "OpenSMILE Vault API連携サービス",
+        "version": "3.0.0",
         "docs": "/docs",
         "health": "/health"
     }
@@ -70,349 +56,14 @@ async def health_check():
         
         return HealthResponse(
             status="healthy",
-            service="OpenSMILE感情分析API",
-            version="2.0.0",
+            service="OpenSMILE Vault API連携サービス",
+            version="3.0.0",
             opensmile_version=opensmile_version
         )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Service unhealthy: {str(e)}"
-        )
-
-
-@app.get("/features", response_model=AvailableFeaturesResponse)
-async def get_available_features():
-    """利用可能な特徴量セットを取得"""
-    try:
-        feature_sets = opensmile_service.get_available_feature_sets()
-        descriptions = opensmile_service.get_feature_set_descriptions()
-        
-        return AvailableFeaturesResponse(
-            available_feature_sets=feature_sets,
-            default=FeatureSetEnum.EGEMAPS_V02.value,
-            descriptions=descriptions
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.get("/files", response_model=FileListResponse)
-async def list_wav_files():
-    """現在のディレクトリの.wavファイル一覧を取得"""
-    try:
-        current_dir = Path(".")
-        wav_files = [f.name for f in current_dir.glob("*.wav")]
-        
-        return FileListResponse(
-            directory=str(current_dir.absolute()),
-            wav_files=wav_files,
-            count=len(wav_files)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.post("/extract", response_model=FeatureExtractionResponse)
-async def extract_features(request: FeatureExtractionRequest = None):
-    """音声ファイルから特徴量を抽出"""
-    start_time = time.time()
-    
-    # リクエストがない場合はデフォルト値を使用
-    if request is None:
-        request = FeatureExtractionRequest()
-    
-    try:
-        # 現在のディレクトリの.wavファイルを検索
-        wav_files = list(Path(".").glob("*.wav"))
-        
-        if not wav_files:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="現在のディレクトリに.wavファイルが見つかりません"
-            )
-        
-        # 各ファイルを処理
-        results = []
-        for wav_file in wav_files:
-            result = opensmile_service.extract_features(
-                str(wav_file), 
-                request.feature_set
-            )
-            
-            # 生の特徴量データを除外する場合
-            if not request.include_raw_features:
-                result.features = {}
-            
-            results.append(result)
-        
-        total_processing_time = time.time() - start_time
-        
-        return FeatureExtractionResponse(
-            feature_set=request.feature_set.value,
-            processed_files=len(results),
-            results=results,
-            total_processing_time=total_processing_time
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.post("/analyze", response_model=EmotionAnalysisResponse)
-async def analyze_emotions(request: FeatureExtractionRequest = None):
-    """音声ファイルから感情を分析"""
-    start_time = time.time()
-    
-    # リクエストがない場合はデフォルト値を使用
-    if request is None:
-        request = FeatureExtractionRequest()
-    
-    try:
-        # 現在のディレクトリの.wavファイルを検索
-        wav_files = list(Path(".").glob("*.wav"))
-        
-        if not wav_files:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="現在のディレクトリに.wavファイルが見つかりません"
-            )
-        
-        # 各ファイルを処理
-        results = []
-        for wav_file in wav_files:
-            try:
-                emotion_prediction, feature_result = emotion_service.analyze_emotion(
-                    str(wav_file),
-                    request.feature_set
-                )
-                
-                # 生の特徴量データを除外する場合
-                if not request.include_raw_features:
-                    feature_result.features = {}
-                
-                analysis_result = EmotionAnalysisResult(
-                    filename=wav_file.name,
-                    primary_emotion=emotion_prediction,
-                    feature_extraction=feature_result
-                )
-                
-                results.append(analysis_result)
-                
-            except Exception as e:
-                # 個別ファイルでエラーが発生した場合
-                error_result = EmotionAnalysisResult(
-                    filename=wav_file.name,
-                    primary_emotion=None,
-                    error=str(e)
-                )
-                results.append(error_result)
-        
-        total_processing_time = time.time() - start_time
-        
-        return EmotionAnalysisResponse(
-            feature_set=request.feature_set.value,
-            processed_files=len(results),
-            results=results,
-            total_processing_time=total_processing_time
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.post("/export", response_model=ExportResponse)
-async def export_analysis_results(request: ExportRequest = None):
-    """分析結果をJSONファイルにエクスポート"""
-    start_time = time.time()
-    
-    # リクエストがない場合はデフォルト値を使用
-    if request is None:
-        request = ExportRequest()
-    
-    try:
-        # 現在のディレクトリの.wavファイルを検索
-        wav_files = list(Path(".").glob("*.wav"))
-        
-        if not wav_files:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="現在のディレクトリに.wavファイルが見つかりません"
-            )
-        
-        output_files = []
-        
-        # 分析タイプに応じて処理
-        if request.analysis_type in ["features", "both"]:
-            # 特徴量抽出
-            feature_results = []
-            for wav_file in wav_files:
-                result = opensmile_service.extract_features(
-                    str(wav_file), 
-                    request.feature_set
-                )
-                
-                if not request.include_raw_features:
-                    result.features = {}
-                
-                feature_results.append(result)
-            
-            # 特徴量抽出結果をファイルに保存
-            features_filename = request.output_filename or f"features_analysis_{int(time.time())}.json"
-            if not features_filename.endswith('.json'):
-                features_filename += '.json'
-            
-            features_response = FeatureExtractionResponse(
-                feature_set=request.feature_set.value,
-                processed_files=len(feature_results),
-                results=feature_results,
-                total_processing_time=time.time() - start_time
-            )
-            
-            with open(features_filename, 'w', encoding='utf-8') as f:
-                import json
-                json.dump(features_response.model_dump(), f, ensure_ascii=False, indent=2)
-            
-            output_files.append(features_filename)
-        
-        if request.analysis_type in ["emotions", "both"]:
-            # 感情分析
-            emotion_results = []
-            for wav_file in wav_files:
-                try:
-                    emotion_prediction, feature_result = emotion_service.analyze_emotion(
-                        str(wav_file),
-                        request.feature_set
-                    )
-                    
-                    if not request.include_raw_features:
-                        feature_result.features = {}
-                    
-                    analysis_result = EmotionAnalysisResult(
-                        filename=wav_file.name,
-                        primary_emotion=emotion_prediction,
-                        feature_extraction=feature_result
-                    )
-                    
-                    emotion_results.append(analysis_result)
-                    
-                except Exception as e:
-                    error_result = EmotionAnalysisResult(
-                        filename=wav_file.name,
-                        primary_emotion=None,
-                        error=str(e)
-                    )
-                    emotion_results.append(error_result)
-            
-            # 感情分析結果をファイルに保存
-            emotions_filename = request.output_filename or f"emotion_analysis_{int(time.time())}.json"
-            if request.analysis_type == "both":
-                emotions_filename = emotions_filename.replace(".json", "_emotions.json")
-            elif not emotions_filename.endswith('.json'):
-                emotions_filename += '.json'
-            
-            emotions_response = EmotionAnalysisResponse(
-                feature_set=request.feature_set.value,
-                processed_files=len(emotion_results),
-                results=emotion_results,
-                total_processing_time=time.time() - start_time
-            )
-            
-            with open(emotions_filename, 'w', encoding='utf-8') as f:
-                import json
-                json.dump(emotions_response.model_dump(), f, ensure_ascii=False, indent=2)
-            
-            output_files.append(emotions_filename)
-        
-        return ExportResponse(
-            success=True,
-            output_files=output_files,
-            message=f"分析結果を {len(output_files)} 個のファイルにエクスポートしました",
-            total_files_processed=len(wav_files)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    """分析結果ファイルをダウンロード"""
-    try:
-        file_path = Path(".") / filename
-        
-        # ファイルの存在確認
-        if not file_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"ファイル '{filename}' が見つかりません"
-            )
-        
-        # セキュリティチェック（JSONファイルのみ許可）
-        if not filename.endswith('.json'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="JSONファイルのみダウンロード可能です"
-            )
-        
-        return FileResponse(
-            path=str(file_path),
-            filename=filename,
-            media_type="application/json"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@app.get("/results", response_model=FileListResponse)
-async def list_result_files():
-    """分析結果ファイル一覧を取得"""
-    try:
-        current_dir = Path(".")
-        json_files = [f.name for f in current_dir.glob("*.json")]
-        
-        # 分析結果ファイルのみをフィルタリング
-        analysis_files = [
-            f for f in json_files 
-            if any(keyword in f for keyword in ["analysis", "features", "emotions"])
-        ]
-        
-        return FileListResponse(
-            directory=str(current_dir.absolute()),
-            wav_files=analysis_files,  # 実際はJSONファイルだが、既存のモデルを再利用
-            count=len(analysis_files)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
         )
 
 
@@ -423,18 +74,18 @@ async def process_vault_data(request: VaultFetchRequest):
     
     try:
         print(f"\n=== Vault API連携による特徴量タイムライン抽出開始 ===")
-        print(f"ユーザーID: {request.user_id}")
+        print(f"デバイスID: {request.device_id}")
         print(f"対象日付: {request.date}")
         print(f"特徴量セット: {request.feature_set.value}")
         print(f"=" * 50)
         
         # 利用可能なWAVファイルを取得
-        available_slots = await vault_service.get_available_wav_files(request.user_id, request.date)
+        available_slots = await vault_service.get_available_wav_files(request.device_id, request.date)
         
         if not available_slots:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"ユーザー {request.user_id} の {request.date} にWAVファイルが見つかりません。アクセスしたパス: {vault_service.base_url}/download?user_id={request.user_id}&date={request.date}&slot=XX-XX"
+                detail=f"デバイス {request.device_id} の {request.date} にWAVファイルが見つかりません。アクセスしたパス: {vault_service.base_url}/download?device_id={request.device_id}&date={request.date}&slot=XX-XX"
             )
         
         print(f"📄 利用可能なWAVファイル: {len(available_slots)}個")
@@ -449,7 +100,7 @@ async def process_vault_data(request: VaultFetchRequest):
         upload_errors = []
         
         # ローカル出力ディレクトリ作成（Whisper APIと同じ方式）
-        local_output_dir = f"/Users/kaya.matsumoto/data/data_accounts/{request.user_id}/{request.date}/opensmile"
+        local_output_dir = f"/Users/kaya.matsumoto/data/data_accounts/{request.device_id}/{request.date}/opensmile"
         os.makedirs(local_output_dir, exist_ok=True)
         print(f"📁 ローカル出力ディレクトリ: {local_output_dir}")
         
@@ -461,7 +112,7 @@ async def process_vault_data(request: VaultFetchRequest):
                     
                     # Vault APIからWAVファイルを取得
                     temp_wav_path = await vault_service.fetch_wav_file(
-                        request.user_id, 
+                        request.device_id, 
                         request.date, 
                         time_slot, 
                         temp_dir
@@ -552,7 +203,7 @@ async def process_vault_data(request: VaultFetchRequest):
                                 filename=json_filename,
                                 content_type="application/json"
                             )
-                            data.add_field("user_id", request.user_id)
+                            data.add_field("device_id", request.device_id)
                             data.add_field("date", request.date)
                             data.add_field("time_slot", time_slot)
                             
@@ -610,34 +261,6 @@ async def process_vault_data(request: VaultFetchRequest):
         )
 
 
-@app.get("/test-data/files", response_model=FileListResponse)
-async def list_test_data_files():
-    """test-dataフォルダ内のファイル一覧を取得"""
-    try:
-        test_data_dir = Path("test-data")
-        
-        if not test_data_dir.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="test-dataディレクトリが見つかりません"
-            )
-        
-        wav_files = [f.name for f in test_data_dir.glob("*.wav")]
-        json_files = [f.name for f in test_data_dir.glob("*.json")]
-        all_files = wav_files + json_files
-        
-        return FileListResponse(
-            directory=str(test_data_dir.absolute()),
-            wav_files=all_files,  # 既存のモデルを再利用（WAV + JSONファイル）
-            count=len(all_files)
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
 
 
 @app.exception_handler(Exception)
