@@ -14,6 +14,7 @@ from supabase import create_client, Client
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import opensmile
 
 from models import (
@@ -32,6 +33,15 @@ app = FastAPI(
     version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
+)
+
+# CORSミドルウェアの設定
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 本番環境では適切なオリジンを指定
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 環境変数の読み込み
