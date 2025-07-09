@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "test_data_directory": "/Users/kaya.matsumoto/projects/watchme/api/opensmile/test-data",
+  "feature_set": "eGeMAPSv02",
+  "processed_files": 1,
+  "saved_files": [
+    "emotion_timeline_1751084590.json"
+  ],
+  "results": [
+    {
+      "date": "2025-06-28",
+      "slot": "unknown",
+      "filename": "20-30.wav",
+      "duration_seconds": 0,
+      "emotion_timeline": [],
+      "processing_time": 4.887580871582031e-05,
+      "error": "'EmotionAnalysisService' object has no attribute 'feature_set_mapping'"
+    }
+  ],
+  "total_processing_time": 0.0022039413452148438,
+  "message": "test-dataフォルダの1個のWAVファイルを処理し、1秒ごとの感情タイムラインを生成しました"
+}

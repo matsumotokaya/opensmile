@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import List
 import aiohttp
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, FileResponse
@@ -21,6 +23,7 @@ from models import (
     VaultFetchRequest
 )
 from services import EmotionAnalysisService, VaultAPIService
+from supabase_service import SupabaseService
 
 # FastAPIアプリケーションの初期化
 app = FastAPI(
@@ -31,9 +34,22 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# 環境変数の読み込み
+load_dotenv()
+
 # サービスの初期化
 emotion_service = EmotionAnalysisService()
 vault_service = VaultAPIService()
+
+# Supabaseクライアントの初期化
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+if supabase_url and supabase_key:
+    supabase_client: Client = create_client(supabase_url, supabase_key)
+    supabase_service = SupabaseService(supabase_client)
+else:
+    supabase_service = None
+    print("⚠️ Supabase環境変数が設定されていません")
 
 
 @app.get("/", response_model=dict)
@@ -95,14 +111,13 @@ async def process_vault_data(request: VaultFetchRequest):
         features_results = []
         fetched_files = []
         error_files = []
-        saved_files = []
-        uploaded_files = []
-        upload_errors = []
+        supabase_records = []  # Supabaseに保存するレコードのリスト
         
-        # ローカル出力ディレクトリ作成（Whisper APIと同じ方式）
-        local_output_dir = f"/Users/kaya.matsumoto/data/data_accounts/{request.device_id}/{request.date}/opensmile"
-        os.makedirs(local_output_dir, exist_ok=True)
-        print(f"📁 ローカル出力ディレクトリ: {local_output_dir}")
+        if not supabase_service:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Supabaseサービスが利用できません。環境変数を確認してください。"
+            )
         
         # 一時ディレクトリを作成してWAVファイルを処理
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -135,15 +150,20 @@ async def process_vault_data(request: VaultFetchRequest):
                         
                         features_results.append(features_result)
                         
-                        # ローカルJSONファイルに保存（Whisper APIと同じ方式）
-                        local_json_path = os.path.join(local_output_dir, f"{time_slot}.json")
-                        with open(local_json_path, 'w', encoding='utf-8') as f:
-                            import json
-                            json.dump(features_result.model_dump(), f, ensure_ascii=False, indent=2)
+                        # Supabase用のレコードを準備
+                        supabase_record = {
+                            "device_id": request.device_id,
+                            "date": request.date,
+                            "time_block": time_slot,
+                            "filename": features_result.filename,
+                            "duration_seconds": features_result.duration_seconds,
+                            "features_timeline": [point.model_dump() for point in features_result.features_timeline],
+                            "processing_time": features_result.processing_time,
+                            "error": features_result.error
+                        }
+                        supabase_records.append(supabase_record)
                         
-                        saved_files.append(f"{time_slot}.json")
-                        print(f"💾 ローカルJSON保存: {local_json_path}")
-                        print(f"✅ 完了: {time_slot}.wav → ローカル保存成功 ({len(features_result.features_timeline)}秒のタイムライン)")
+                        print(f"✅ 完了: {time_slot}.wav → 特徴量抽出成功 ({len(features_result.features_timeline)}秒のタイムライン)")
                         
                     else:
                         error_files.append(f"{time_slot}.wav")
@@ -158,6 +178,19 @@ async def process_vault_data(request: VaultFetchRequest):
                             error=f"Vault APIからのファイル取得に失敗: {time_slot}.wav"
                         )
                         features_results.append(error_result)
+                        
+                        # エラーレコードもSupabaseに保存
+                        supabase_record = {
+                            "device_id": request.device_id,
+                            "date": request.date,
+                            "time_block": time_slot,
+                            "filename": error_result.filename,
+                            "duration_seconds": 0,
+                            "features_timeline": [],
+                            "processing_time": 0,
+                            "error": error_result.error
+                        }
+                        supabase_records.append(supabase_record)
                         
                 except Exception as e:
                     error_files.append(f"{time_slot}.wav")
@@ -174,79 +207,72 @@ async def process_vault_data(request: VaultFetchRequest):
                         error=str(e)
                     )
                     features_results.append(error_result)
+                    
+                    # エラーレコードもSupabaseに保存
+                    supabase_record = {
+                        "device_id": request.device_id,
+                        "date": request.date,
+                        "time_block": time_slot,
+                        "filename": error_result.filename,
+                        "duration_seconds": 0,
+                        "features_timeline": [],
+                        "processing_time": 0,
+                        "error": str(e)
+                    }
+                    supabase_records.append(supabase_record)
         
-        # ローカルに保存された全てのJSONファイルをVault APIにアップロード（Whisper APIと同じ方式）
-        local_json_files = [f for f in os.listdir(local_output_dir) if f.endswith('.json')]
-        
-        print(f"\n=== Vault APIアップロード開始 ===")
-        print(f"アップロード対象: {len(local_json_files)} ファイル")
+        # Supabaseにバッチで保存
+        print(f"\n=== Supabase保存開始 ===")
+        print(f"保存対象: {len(supabase_records)} レコード")
         print(f"=" * 50)
         
-        if local_json_files:
-            # SSL検証をスキップするコネクターを作成（Whisper APIと同じ）
-            connector = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                for json_filename in local_json_files:
-                    try:
-                        json_path = os.path.join(local_output_dir, json_filename)
-                        time_slot = json_filename.replace('.json', '')
-                        
-                        print(f"🚀 アップロード開始: {json_filename}")
-                        print(f"📁 ローカルファイルパス: {json_path}")
-                        print(f"📏 ファイルサイズ: {os.path.getsize(json_path)} bytes")
-                        
-                        with open(json_path, 'rb') as f:
-                            data = aiohttp.FormData()
-                            data.add_field(
-                                "file", 
-                                f, 
-                                filename=json_filename,
-                                content_type="application/json"
-                            )
-                            data.add_field("device_id", request.device_id)
-                            data.add_field("date", request.date)
-                            data.add_field("time_slot", time_slot)
-                            
-                            print(f"📤 POST送信先: {vault_service.base_url}/upload/analysis/opensmile-features")
-                            
-                            async with session.post(f"{vault_service.base_url}/upload/analysis/opensmile-features", data=data) as upload_response:
-                                response_text = await upload_response.text()
-                                print(f"📡 レスポンスステータス: {upload_response.status}")
-                                
-                                if upload_response.status == 200:
-                                    uploaded_files.append(json_filename)
-                                    print(f"✅ アップロード成功: {json_filename}")
-                                else:
-                                    upload_errors.append(json_filename)
-                                    print(f"❌ アップロード失敗: {json_filename}")
-                                    print(f"   - ステータスコード: {upload_response.status}")
-                                    print(f"   - エラー詳細: {response_text}")
-                    
-                    except Exception as e:
-                        upload_errors.append(json_filename)
-                        print(f"❌ アップロード例外エラー: {json_filename}")
-                        print(f"   - エラー詳細: {str(e)}")
+        saved_count = 0
+        save_errors = []
         
-        # レスポンス作成（統合ファイルは出力しない）
+        if supabase_records:
+            try:
+                # バッチでUPSERT実行
+                await supabase_service.batch_upsert_emotion_data(supabase_records)
+                saved_count = len(supabase_records)
+                print(f"✅ Supabase保存成功: {saved_count} レコード")
+            except Exception as e:
+                print(f"❌ Supabaseバッチ保存エラー: {str(e)}")
+                # 個別に保存を試みる
+                for record in supabase_records:
+                    try:
+                        await supabase_service.upsert_emotion_data(
+                            device_id=record["device_id"],
+                            date=record["date"],
+                            time_block=record["time_block"],
+                            filename=record["filename"],
+                            duration_seconds=record["duration_seconds"],
+                            features_timeline=record["features_timeline"],
+                            processing_time=record["processing_time"],
+                            error=record.get("error")
+                        )
+                        saved_count += 1
+                    except Exception as individual_error:
+                        save_errors.append(f"{record['time_block']}: {str(individual_error)}")
+                        print(f"❌ 個別保存エラー: {record['time_block']} - {str(individual_error)}")
+        
+        # レスポンス作成
         features_response = FeaturesTimelineResponse(
             success=True,
-            test_data_directory=f"Vault API: {vault_service.base_url}",
+            test_data_directory=f"Supabase: emotion_opensmile table",
             feature_set=request.feature_set.value,
             processed_files=len(features_results),
-            saved_files=uploaded_files,  # アップロード成功したファイルのみ
+            saved_files=[f"{record['time_block']}.json" for record in supabase_records[:saved_count]],
             results=features_results,
             total_processing_time=time.time() - start_time,
-            message=f"Vault APIから{len(fetched_files)}個のWAVファイルを取得し、{len(uploaded_files)}個の個別JSONファイルをVault APIにアップロードしました"
+            message=f"Vault APIから{len(fetched_files)}個のWAVファイルを取得し、{saved_count}個のレコードをSupabaseに保存しました"
         )
         
         print(f"\n=== Vault API連携による特徴量タイムライン抽出完了 ===")
         print(f"📥 WAV取得成功: {len(fetched_files)} ファイル")
         print(f"🎵 特徴量抽出完了: {len(features_results)} ファイル")
-        print(f"💾 ローカル保存: {len(saved_files)} ファイル")
-        print(f"🚀 Vault APIアップロード成功: {len(uploaded_files)} ファイル")
+        print(f"💾 Supabase保存成功: {saved_count} レコード")
         print(f"❌ WAV取得エラー: {len(error_files)} ファイル")
-        print(f"❌ アップロードエラー: {len(upload_errors)} ファイル")
-        print(f"📁 ローカル出力ディレクトリ: {local_output_dir}")
+        print(f"❌ 保存エラー: {len(save_errors)} 件")
         print(f"⏱️ 総処理時間: {time.time() - start_time:.2f}秒")
         print(f"=" * 50)
         

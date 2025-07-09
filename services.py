@@ -10,6 +10,9 @@ from typing import Dict, List, Optional
 import opensmile
 from datetime import datetime
 import aiohttp
+from supabase import create_client, Client
+from dotenv import load_dotenv
+import json
 from models import (
     FeatureSetEnum,
     FeatureTimelinePoint,
@@ -25,6 +28,16 @@ class EmotionAnalysisService:
         self.feature_set_mapping = {
             FeatureSetEnum.EGEMAPS_V02: opensmile.FeatureSet.eGeMAPSv02,
         }
+        
+        # Supabaseクライアントの初期化
+        load_dotenv()
+        self.supabase_url = os.getenv("SUPABASE_URL")
+        self.supabase_key = os.getenv("SUPABASE_KEY")
+        if self.supabase_url and self.supabase_key:
+            self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        else:
+            self.supabase = None
+            print("⚠️ Supabase環境変数が設定されていません")
     
     def extract_features_timeline(
         self,
@@ -56,16 +69,18 @@ class EmotionAnalysisService:
             # 音声の長さを計算
             duration_seconds = int(len(features_df) * 0.01)  # 10msフレーム → 秒
             
-            # ファイル名から日付とスロットを推定（例: "20-30.wav" → "08:20-08:30"）
+            # ファイル名から日付とスロットを推定（例: "20-30.wav" → スロット "20-30"）
             filename = Path(wav_file_path).stem
             date_str = datetime.now().strftime("%Y-%m-%d")
             
-            # ファイル名からスロット情報を抽出
-            if '-' in filename and filename.replace('-', '').isdigit():
-                start_minute, end_minute = filename.split('-')
-                slot = f"08:{start_minute}-08:{end_minute}"
+            # ファイル名からスロット情報を抽出（HH-MM形式）
+            if '-' in filename and filename.replace('-', '').isdigit() and len(filename) == 5:
+                slot = filename  # そのまま使用（例: "20-30"）
+                # タイムスタンプの基準時刻を計算
+                hour, minute = map(int, filename.split('-'))
             else:
-                slot = "08:00-08:30"  # デフォルト
+                slot = "00-00"  # デフォルト
+                hour, minute = 0, 0
             
             # 1秒ごとにタイムラインポイントを生成
             timeline_points = []
@@ -84,7 +99,12 @@ class EmotionAnalysisService:
                     features_dict = second_features.to_dict()
                     
                     # タイムスタンプを生成（HH:MM:SS形式）
-                    timestamp = f"08:{int(second//60):02d}:{second%60:02d}"
+                    # 基準時刻からの経過秒数を加算
+                    total_seconds = hour * 3600 + minute * 60 + second
+                    ts_hour = (total_seconds // 3600) % 24
+                    ts_minute = (total_seconds % 3600) // 60
+                    ts_second = total_seconds % 60
+                    timestamp = f"{ts_hour:02d}:{ts_minute:02d}:{ts_second:02d}"
                     
                     timeline_point = FeatureTimelinePoint(
                         timestamp=timestamp,

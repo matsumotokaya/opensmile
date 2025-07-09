@@ -1,0 +1,30 @@
+{
+  "feature_set": "eGeMAPSv02",
+  "processed_files": 1,
+  "results": [
+    {
+      "filename": "20-30.wav",
+      "primary_emotion": {
+        "emotion": "sad",
+        "confidence": 0.6,
+        "raw_scores": {
+          "happy": 0.0,
+          "sad": 0.6,
+          "angry": 0.0,
+          "neutral": 0.4,
+          "excited": 0.0
+        }
+      },
+      "all_emotions": null,
+      "feature_extraction": {
+        "filename": "20-30.wav",
+        "feature_count": 88,
+        "features": {},
+        "error": null,
+        "processing_time": 0.9856209754943848
+      },
+      "error": null
+    }
+  ],
+  "total_processing_time": 0.9862461090087891
+}

@@ -40,4 +40,5 @@ Thumbs.db
 *.log
 
 # Environment variables
-.envserver.pid
+.env
+server.pid
