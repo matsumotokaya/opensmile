@@ -24,28 +24,129 @@ OpenSMILEライブラリを使用したVault API連携による音声特徴量�
 
 ## 使用方法
 
-### サーバー起動
+### ローカル開発環境での起動
 
 ```bash
-# 依存関係インストール（Python3を使用）
+# 1. 依存関係のインストール (Python3を使用)
+#    プロジェクトルートで実行してください
 pip3 install -r requirements.txt
 
-# サーバー起動（ポート8011を使用）
-uvicorn main:app --host 0.0.0.0 --port 8011
+# 2. 環境変数の設定
+#    プロジェクトルートに .env ファイルを作成し、Supabaseの接続情報を記述します。
+#    例:
+#    SUPABASE_URL=https://your-project.supabase.co
+#    SUPABASE_KEY=your-supabase-anon-key
 
-# または開発モード（Python3で実行）
-python3 main.py
+# 3. サーバー起動 (開発モード、ポート8011を使用)
+#    コード変更時に自動でリロードされます
+uvicorn main:app --host 0.0.0.0 --port 8011 --reload
+
+# または、手動で起動する場合
+# python3 main.py
 ```
 
 **注意事項:**
 - **このAPIはポート8011で動作します**
 - **Python3を使用してください**（`python`ではなく`python3`コマンドを使用）
+- `.env`ファイルはGit管理から除外されています。機密情報を含めるため、手動で作成・管理してください。
+
+### 本番環境へのデプロイ (Docker & systemd)
+
+本番環境では、Dockerコンテナとしてデプロイし、`systemd`で常時起動させることを推奨します。
+
+#### 1. ローカルでのDockerイメージのビルドと保存
+
+`opensmile`アプリケーションのルートディレクトリ (`~/projects/watchme/api/opensmile`) で実行します。
+
+```bash
+# Dockerイメージをビルド
+docker build -t watchme-opensmile-api:latest .
+
+# ビルドしたイメージを .tar ファイルとして保存
+docker save -o watchme-opensmile-api.tar watchme-opensmile-api:latest
+```
+
+#### 2. サーバーへの転送とロード
+
+`watchme-opensmile-api.tar`ファイルをサーバーの任意の場所（例: `/home/ubuntu/`）に転送し、ロードします。
+
+```bash
+# ローカルからサーバーへファイルを転送
+# (秘密鍵のパスを適切に指定してください)
+scp -i ~/.ssh/your-key.pem watchme-opensmile-api.tar ubuntu@your-server-ip:/home/ubuntu/
+
+# サーバーにSSH接続し、イメージをロード
+ssh -i ~/.ssh/your-key.pem ubuntu@your-server-ip "docker load -i /home/ubuntu/watchme-opensmile-api.tar"
+```
+
+#### 3. 環境変数の設定
+
+サーバーの`/home/ubuntu/opensmile/`ディレクトリに`.env`ファイルを作成し、ローカルの`.env`ファイルと同じ内容を記述します。
+
+```bash
+# サーバーにSSH接続後、以下のコマンドでファイルを作成・編集
+# (nanoエディタが開くので、内容を貼り付けて保存してください)
+sudo nano /home/ubuntu/opensmile/.env
+
+# 例:
+# SUPABASE_URL=https://your-project.supabase.co
+# SUPABASE_KEY=your-supabase-anon-key
+
+# パーミッションを安全に設定 (rootのみ読み書き可能)
+sudo chmod 600 /home/ubuntu/opensmile/.env
+```
+
+#### 4. systemdサービスの設定
+
+`/etc/systemd/system/opensmile-api.service`に以下の内容でサービスファイルを作成します。
+
+```ini
+[Unit]
+Description=OpenSMILE API Docker Container
+After=docker.service
+Requires=docker.service
+
+[Service]
+TimeoutStartSec=0
+Restart=always
+RestartSec=5
+# 既存のコンテナがあれば停止・削除してから起動
+ExecStartPre=-/usr/bin/docker stop opensmile-api
+ExecStartPre=-/usr/bin/docker rm opensmile-api
+# Dockerコンテナを起動。ホストの8011ポートをコンテナの8000ポートにマッピング。
+# --env-file で .env ファイルから環境変数を読み込みます。
+ExecStart=/usr/bin/docker run --name opensmile-api -p 8011:8000 --env-file /home/ubuntu/opensmile/.env watchme-opensmile-api:latest
+# EnvironmentFileで環境変数を読み込む
+EnvironmentFile=/home/ubuntu/opensmile/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 5. systemdサービスの有効化と起動
+
+サービスファイルを配置したら、`systemd`に設定を読み込ませ、サービスを有効化・起動します。
+
+```bash
+# systemdデーモンをリロード
+sudo systemctl daemon-reload
+
+# サービスを有効化 (サーバー起動時に自動で立ち上がるように)
+sudo systemctl enable opensmile-api.service
+
+# サービスを起動
+sudo systemctl start opensmile-api.service
+
+# サービスのステータスを確認
+sudo systemctl status opensmile-api.service
+```
 
 ### Vault API連携エンドポイントの使用例
 
 ```bash
 # EC2 Vault APIからWAVファイルを取得して特徴量タイムライン抽出
-curl -X POST http://localhost:8011/process/vault-data \
+# (サーバーのIPアドレスとポート8011を指定)
+curl -X POST http://your-server-ip:8011/process/vault-data \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": "device123",
@@ -63,7 +164,7 @@ curl -X POST http://localhost:8011/process/vault-data \
 CREATE TABLE emotion_opensmile (
   device_id         text NOT NULL,
   date              date NOT NULL,
-  time_block        text NOT NULL CHECK (time_block ~ '^[0-2][0-9]-[0-5][0-9]$'),
+  time_block        text NOT NULL CHECK (time_block ~ '^[0-2][0-9]-[0-5][0-9]),
   filename          text,
   duration_seconds  integer,
   features_timeline jsonb NOT NULL,  -- timestamp + features のリスト
@@ -84,9 +185,9 @@ CREATE TABLE emotion_opensmile (
       "alphaRatio_sma3": -7.842461109161377,
       "hammarbergIndex_sma3": 16.497520446777344,
       "mfcc1_sma3": 8.365259170532227,
-      "F1frequency_sma3nz": 788.834228515625,
-      "F2frequency_sma3nz": 1727.9415283203125,
-      "F3frequency_sma3nz": 2660.05126953125
+      "F1frequency_sma3nz": 788.834228516,
+      "F2frequency_sma3nz": 1727.94152832,
+      "F3frequency_sma3nz": 2660.05126953
     }
   }
 ]
