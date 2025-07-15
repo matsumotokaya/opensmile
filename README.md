@@ -54,49 +54,49 @@ uvicorn main:app --host 0.0.0.0 --port 8011 --reload
 
 本番環境では、Dockerコンテナとしてデプロイし、`systemd`で常時起動させることを推奨します。
 
-#### 1. ローカルでのDockerイメージのビルドと保存
+#### 1. 本番サーバーでのDockerイメージのビルド
 
-`opensmile`アプリケーションのルートディレクトリ (`~/projects/watchme/api/opensmile`) で実行します。
+本番サーバー（EC2）にSSH接続してDockerイメージをビルドします。
 
 ```bash
+# SSH接続
+ssh -i ~/watchme-key.pem ubuntu@3.24.16.82
+
+# プロジェクトディレクトリに移動
+cd /home/ubuntu/opensmile
+
+# requirements.txtの依存関係を確認・修正
+# httpx==0.25.2 → httpx==0.26.0 に変更（supabaseとの互換性のため）
+sudo sed -i 's/httpx==0.25.2/httpx==0.26.0/' requirements.txt
+
 # Dockerイメージをビルド
-docker build -t watchme-opensmile-api:latest .
-
-# ビルドしたイメージを .tar ファイルとして保存
-docker save -o watchme-opensmile-api.tar watchme-opensmile-api:latest
+sudo docker build -t watchme-opensmile-api:latest .
 ```
 
-#### 2. サーバーへの転送とロード
+**注意事項:**
+- httpxのバージョンは0.26.0以上が必要です（supabase 2.10.0との互換性のため）
+- ビルドには数分かかる場合があります
 
-`watchme-opensmile-api.tar`ファイルをサーバーの任意の場所（例: `/home/ubuntu/`）に転送し、ロードします。
+#### 2. 環境変数の設定
 
-```bash
-# ローカルからサーバーへファイルを転送
-# (秘密鍵のパスを適切に指定してください)
-scp -i ~/.ssh/your-key.pem watchme-opensmile-api.tar ubuntu@your-server-ip:/home/ubuntu/
-
-# サーバーにSSH接続し、イメージをロード
-ssh -i ~/.ssh/your-key.pem ubuntu@your-server-ip "docker load -i /home/ubuntu/watchme-opensmile-api.tar"
-```
-
-#### 3. 環境変数の設定
-
-サーバーの`/home/ubuntu/opensmile/`ディレクトリに`.env`ファイルを作成し、ローカルの`.env`ファイルと同じ内容を記述します。
+サーバーの`/home/ubuntu/opensmile/`ディレクトリに`.env`ファイルを作成し、Supabaseの接続情報を記述します。
 
 ```bash
-# サーバーにSSH接続後、以下のコマンドでファイルを作成・編集
-# (nanoエディタが開くので、内容を貼り付けて保存してください)
-sudo nano /home/ubuntu/opensmile/.env
-
-# 例:
-# SUPABASE_URL=https://your-project.supabase.co
-# SUPABASE_KEY=your-supabase-anon-key
+# .envファイルを作成
+sudo tee /home/ubuntu/opensmile/.env > /dev/null << 'EOF'
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-supabase-anon-key
+EOF
 
 # パーミッションを安全に設定 (rootのみ読み書き可能)
 sudo chmod 600 /home/ubuntu/opensmile/.env
 ```
 
-#### 4. systemdサービスの設定
+**注意事項:**
+- .envファイルには正しいSupabaseの認証情報を設定してください
+- ファイルの最後に余分な行や重複した設定がないことを確認してください
+
+#### 3. systemdサービスの設定
 
 `/etc/systemd/system/opensmile-api.service`に以下の内容でサービスファイルを作成します。
 
@@ -123,7 +123,7 @@ EnvironmentFile=/home/ubuntu/opensmile/.env
 WantedBy=multi-user.target
 ```
 
-#### 5. systemdサービスの有効化と起動
+#### 4. systemdサービスの有効化と起動
 
 サービスファイルを配置したら、`systemd`に設定を読み込ませ、サービスを有効化・起動します。
 
@@ -141,16 +141,65 @@ sudo systemctl start opensmile-api.service
 sudo systemctl status opensmile-api.service
 ```
 
+#### 5. Nginxリバースプロキシの設定
+
+外部からAPIにアクセスできるよう、Nginxの設定を行います。
+
+```bash
+# Nginx設定ファイルに emotion-features エンドポイントを追加
+# /etc/nginx/sites-available/api.hey-watch.me に以下のlocationブロックを追加:
+
+# OpenSMILE API (emotion-features)
+location /emotion-features/ {
+    proxy_pass http://localhost:8011/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # CORS設定
+    add_header "Access-Control-Allow-Origin" "*";
+    add_header "Access-Control-Allow-Methods" "GET, POST, OPTIONS";
+    add_header "Access-Control-Allow-Headers" "Content-Type, Authorization";
+    
+    # OPTIONSリクエストの処理
+    if ($request_method = "OPTIONS") {
+        return 204;
+    }
+}
+
+# Nginx設定をテスト
+sudo nginx -t
+
+# Nginxをリロード
+sudo systemctl reload nginx
+```
+
+### 本番環境でのAPIアクセス
+
+本番環境のAPIは以下のURLでアクセス可能です：
+
+- **エンドポイント**: https://api.hey-watch.me/emotion-features/
+- **ヘルスチェック**: https://api.hey-watch.me/emotion-features/health
+- **APIドキュメント**: https://api.hey-watch.me/emotion-features/docs
+
 ### Vault API連携エンドポイントの使用例
 
 ```bash
-# EC2 Vault APIからWAVファイルを取得して特徴量タイムライン抽出
-# (サーバーのIPアドレスとポート8011を指定)
-curl -X POST http://your-server-ip:8011/process/vault-data \
+# ローカル環境から直接サーバーのAPIを呼び出す場合
+curl -X POST http://3.24.16.82:8011/process/vault-data \
   -H "Content-Type: application/json" \
   -d '{
-    "device_id": "device123",
-    "date": "2025-06-25"
+    "device_id": "d067d407-cf73-4174-a9c1-d91fb60d64d0",
+    "date": "2025-07-15"
+  }'
+
+# 本番環境のAPIエンドポイントを使用する場合（推奨）
+curl -X POST https://api.hey-watch.me/emotion-features/process/vault-data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "d067d407-cf73-4174-a9c1-d91fb60d64d0",
+    "date": "2025-07-15"
   }'
 ```
 
@@ -292,6 +341,32 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-supabase-anon-key
 ```
 
+## トラブルシューティング
+
+### Dockerビルドエラー
+
+httpxの依存関係エラーが発生する場合：
+```bash
+# requirements.txtを修正
+sed -i 's/httpx==0.25.2/httpx==0.26.0/' requirements.txt
+```
+
+### Supabase接続エラー
+
+"Invalid API key"エラーが発生する場合：
+- .envファイルの内容を確認（余分な行や重複がないか）
+- SUPABASE_URLとSUPABASE_KEYが正しく設定されているか確認
+
+### systemdサービスの確認
+
+```bash
+# ログを確認
+sudo journalctl -u opensmile-api.service -f
+
+# サービスの再起動
+sudo systemctl restart opensmile-api.service
+```
+
 ## 開発
 
 ### Docker使用
@@ -301,7 +376,7 @@ SUPABASE_KEY=your-supabase-anon-key
 docker build -t opensmile-vault-api .
 
 # コンテナ実行
-docker run -p 8011:8011 opensmile-vault-api
+docker run -p 8011:8000 --env-file .env opensmile-vault-api
 ```
 
 ## 注意事項
@@ -337,6 +412,14 @@ python3 test_supabase_integration.py
 ```
 
 ## 変更履歴
+
+### v4.1.0 (2025-07-15) - 本番環境デプロイ
+- **本番環境への正式デプロイ**: EC2サーバー（3.24.16.82）にDocker + systemdで展開
+- **HTTPSエンドポイント追加**: https://api.hey-watch.me/emotion-features/ でアクセス可能
+- **依存関係の修正**: httpxを0.26.0にアップグレード（supabase 2.10.0との互換性確保）
+- **Nginx設定追加**: リバースプロキシ設定でCORS対応も実装
+- **動作確認完了**: 
+  - `d067d407-cf73-4174-a9c1-d91fb60d64d0` (2025-07-15): 2スロット処理成功（14:00-14:30, 15:30-16:00）
 
 ### v4.0.0 (2025-07-09)
 - **Supabase統合**: ローカルファイル保存・Vaultアップロード処理を削除

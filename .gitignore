@@ -42,3 +42,4 @@ Thumbs.db
 # Environment variables
 .env
 server.pid
+*.tar
