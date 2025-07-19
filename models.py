@@ -67,10 +67,9 @@ class FeaturesTimelineResult(BaseModel):
 
 
 
-class VaultFetchRequest(BaseModel):
-    """Vault APIからのWAVファイル取得リクエスト"""
-    device_id: str = Field(description="デバイスID (例: device123)")
-    date: str = Field(description="日付 (YYYY-MM-DD形式, 例: 2025-06-25)")
+class EmotionFeaturesRequest(BaseModel):
+    """感情特徴量抽出リクエスト（file_pathsベース、Whisper APIパターン準拠）"""
+    file_paths: List[str] = Field(description="処理対象のファイルパス一覧 (例: ['files/device_id/date/time/audio.wav'])")
     feature_set: FeatureSetEnum = Field(
         default=FeatureSetEnum.EGEMAPS_V02,
         description="使用する特徴量セット（eGeMAPSv02固定）"
