@@ -173,9 +173,9 @@ RestartSec=5
 # 既存のコンテナがあれば停止・削除してから起動
 ExecStartPre=-/usr/bin/docker stop opensmile-api
 ExecStartPre=-/usr/bin/docker rm opensmile-api
-# Dockerコンテナを起動。ホストの8011ポートをコンテナの8000ポートにマッピング。
+# Dockerコンテナを起動。ホストの8011ポートをコンテナの8011ポートにマッピング。
 # --env-file で .env ファイルから環境変数を読み込みます。
-ExecStart=/usr/bin/docker run --name opensmile-api -p 8011:8000 --env-file /home/ubuntu/opensmile/.env watchme-opensmile-api:latest
+ExecStart=/usr/bin/docker run --name opensmile-api -p 8011:8011 --env-file /home/ubuntu/opensmile/.env watchme-opensmile-api:latest
 # EnvironmentFileで環境変数を読み込む
 EnvironmentFile=/home/ubuntu/opensmile/.env
 
@@ -486,7 +486,7 @@ sudo systemctl restart opensmile-api.service
 docker build -t opensmile-vault-api .
 
 # コンテナ実行
-docker run -p 8011:8000 --env-file .env opensmile-vault-api
+docker run -p 8011:8011 --env-file .env opensmile-vault-api
 ```
 
 ## 注意事項
